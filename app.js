@@ -12,6 +12,8 @@ const REPARTI = ['Frutta e verdura', 'Pane e forno', 'Latticini e frigo', 'Carne
 const LOCS = { dispensa: 'Dispensa', frigo: 'Frigo', freezer: 'Freezer' };
 const UNITS = ['pz', 'g', 'ml', 'conf'];
 const STEP = { g: 100, ml: 250, pz: 1, conf: 1 };
+// Indirizzo del server Apps Script (lettura scontrini con l'AI)
+const SERVER_URL = '';
 const COLORS = ['#1d6b47', '#b8392a', '#9a6212', '#2f5d9e', '#7a3fa0', '#2a7f86'];
 
 const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
@@ -40,7 +42,7 @@ const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.
 /* ================= Stato ================= */
 const state = {
   user: null, hid: null, household: null,
-  stock: [], list: [], recipes: [], reminders: [], purchases: [],
+  stock: [], list: [], recipes: [], reminders: [], purchases: [], aliases: [],
   loaded: {}, meta: {},
   tab: 'home', loc: 'frigo', recipeFilter: 'tutte',
 };
@@ -236,6 +238,7 @@ function startHousehold(hid) {
   listen('recipes', col('recipes'), s => { state.recipes = rows(s); });
   listen('reminders', col('reminders'), s => { state.reminders = rows(s); });
   listen('purchases', query(col('purchases'), where('date', '>=', isoIn(-120))), s => { state.purchases = rows(s); });
+  listen('aliases', col('aliases'), s => { state.aliases = rows(s); });
 }
 
 let raf = 0;
@@ -478,7 +481,7 @@ function sheetAdd() {
   sheet('Aggiungi prodotti', `
     <button class="opt" data-act="barcode">${ic('barcode')}<div><b>Scansiona il codice a barre</b><span>Riconosce il prodotto e ricorda il nome che scegli tu</span></div></button>
     <button class="opt" data-act="manual">${ic('pencil')}<div><b>Inserisci a mano</b><span>Per frutta, verdura e prodotti sfusi</span></div></button>
-    <button class="opt" data-act="phase2" data-what="La lettura degli scontrini">${ic('receipt')}<div><b>Foto dello scontrino <span class="soon">presto</span></b><span>Arriva nella prossima versione, con l'AI</span></div></button>`);
+    <button class="opt" data-act="receipt">${ic('receipt')}<div><b>Foto dello scontrino</b><span>Legge tutte le righe: controlli, correggi e salvi</span></div></button>`);
 }
 
 function stockForm(p, prefix) {
@@ -580,6 +583,120 @@ async function lookupBarcode(code) {
       <button class="btn primary block" type="submit">Aggiungi</button>
       <button class="btn block" type="button" data-act="barcode">Scansiona un altro</button>
     </form>`);
+}
+
+/* --- Scontrino --- */
+// Chiave stabile di una riga di scontrino: solo le lettere (pesi e prezzi cambiano da una spesa all'altra)
+const rawKey = raw => String(raw || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 60);
+let rc = null; // scontrino in revisione
+
+async function callServer(action, payload) {
+  if (!SERVER_URL) throw new Error('Il server non è ancora collegato');
+  if (!navigator.onLine) throw new Error('Serve la connessione per leggere lo scontrino');
+  const idToken = await auth.currentUser.getIdToken();
+  const res = await fetch(SERVER_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action, idToken, ...payload }) });
+  let j; try { j = await res.json(); } catch (_) { throw new Error('Risposta del server non valida'); }
+  if (!j.ok) throw new Error(j.error || 'Errore del server');
+  return j;
+}
+
+// Rimpicciolisce la foto sul telefono (lato lungo 1600 px, JPEG): invio veloce anche con poco campo
+async function shrinkImage(file, max = 1600) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = url; });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    const data = c.toDataURL('image/jpeg', 0.82);
+    return { preview: data, base64: data.split(',')[1] };
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function sheetReceipt() {
+  sheet('Foto dello scontrino', `
+    <label class="btn primary block" for="rcam">Scatta una foto</label>
+    <input type="file" id="rcam" accept="image/*" capture="environment" hidden>
+    <label class="btn block" for="rlib">Scegli dalla galleria</label>
+    <input type="file" id="rlib" accept="image/*" hidden>
+    <p class="hint">Inquadra tutto lo scontrino, dritto e ben illuminato. Se è lungo, piegalo o fai due foto separate.</p>`);
+}
+
+async function readReceipt(file) {
+  sheet('Leggo lo scontrino', `<div class="spinner" role="progressbar" aria-label="Lettura"></div><p class="hint" style="text-align:center" id="rstatus">Preparo la foto…</p>`);
+  try {
+    const img = await shrinkImage(file);
+    if ($('rstatus')) $('rstatus').textContent = 'L\'AI sta leggendo le righe (10-20 secondi)…';
+    const aliases = [...state.aliases].sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0)).slice(0, 150).map(a => ({ raw: a.raw, name: a.name }));
+    const out = await callServer('receipt', { image: img.base64, mime: 'image/jpeg', aliases });
+    const amap = new Map(state.aliases.map(a => [a.id, a]));
+    rc = {
+      store: out.store, total: out.total, preview: img.preview, remember: true,
+      lines: out.lines.map(l => {
+        const a = l.skip ? null : amap.get(rawKey(l.raw));
+        const x = { ...l, ...(a ? { name: a.name, loc: a.loc || l.loc, rep: a.rep || l.rep, unit: a.unit || l.unit } : {}) };
+        return { ...x, on: !l.skip, aiName: x.name, aiLoc: x.loc, exp: x.expDays == null ? '' : isoIn(x.expDays), known: !!a };
+      }),
+    };
+    drawReceipt();
+  } catch (e) {
+    console.error(e);
+    sheet('Scontrino non letto', `<p class="err">${esc(e.message || 'Errore')}</p>
+      <button class="btn primary block" data-act="receipt">Riprova</button><button class="btn block" data-act="manual">Inserisci a mano</button>`);
+  }
+}
+
+function drawReceipt() {
+  const on = rc.lines.filter(l => l.on);
+  const sum = on.reduce((a, l) => a + (num(l.price) || 0), 0);
+  const lineHtml = (l, i) => l.skip && !l.on ? `
+    <div class="rline off"><div class="top"><span class="mono">${esc(l.raw)}</span>
+      <button type="button" class="btn small ghost" data-rinc="${i}">Includi</button></div><span class="hint">Ignorata: ${esc(l.skip)}</span></div>` : `
+    <div class="rline ${l.on ? '' : 'off'}">
+      <div class="top"><span class="mono">${esc(l.raw)}</span>
+        <button type="button" class="check" role="checkbox" aria-checked="${l.on}" aria-label="Includi ${esc(l.name)}" data-ron="${i}">${l.on ? ic('tick', 3) : ''}</button></div>
+      <label class="field">Nome${l.known ? ' <span class="chip ok" style="margin-left:6px">come l\'altra volta</span>' : ''}<input data-rfield="name" data-ri="${i}" value="${esc(l.name)}"></label>
+      <div class="grid3">
+        <label class="field">Quantità<input type="number" step="any" inputmode="decimal" data-rfield="qty" data-ri="${i}" value="${l.qty}"></label>
+        <label class="field">Unità<select data-rfield="unit" data-ri="${i}">${opts(UNITS, l.unit)}</select></label>
+        <label class="field">Dove<select data-rfield="loc" data-ri="${i}">${locOpts(l.loc)}<option value="none" ${l.loc === 'none' ? 'selected' : ''}>Non tracciare</option></select></label>
+      </div>
+      <div class="grid2">
+        <label class="field">Scadenza<input type="date" data-rfield="exp" data-ri="${i}" value="${l.exp || ''}"></label>
+        <label class="field">Prezzo (€)<input type="number" step="0.01" inputmode="decimal" data-rfield="price" data-ri="${i}" value="${l.price || ''}"></label>
+      </div>
+    </div>`;
+  const diff = rc.total ? Math.abs(rc.total - sum) : 0;
+  sheet('Controlla e salva', `
+    <img class="thumb" src="${rc.preview}" alt="Foto dello scontrino">
+    <p class="hint" style="margin:0">${rc.store ? esc(rc.store) + ' · ' : ''}In grigio il testo stampato, sotto il nome che vedrai in app. Le scadenze sono stimate: correggile se serve.</p>
+    ${rc.lines.map(lineHtml).join('')}
+    <p class="note num">Somma righe incluse: <b>${eur(sum)}</b>${rc.total ? ` · totale scontrino ${eur(rc.total)}${diff > 0.05 ? ' <span class="chip warn">non coincide: controlla prezzi e sconti</span>' : ' <span class="chip ok">coincide</span>'}` : ''}</p>
+    <label class="row" style="padding:0;border:0;gap:10px"><button type="button" class="check" role="checkbox" aria-checked="${rc.remember}" data-act="rremember" aria-label="Ricorda correzioni">${rc.remember ? ic('tick', 3) : ''}</button>
+      <span class="s">Ricorda le mie correzioni per i prossimi scontrini</span></label>
+    <button class="btn primary block" data-act="rsave" ${on.length ? '' : 'disabled'}>Salva ${on.length} prodott${on.length === 1 ? 'o' : 'i'}</button>`);
+}
+
+function saveReceipt() {
+  const lines = rc.lines.filter(l => l.on && cap(l.name));
+  const b = writeBatch(db); let n = 0, fixes = 0;
+  const bought = new Set();
+  lines.forEach(l => {
+    const name = cap(l.name);
+    addPurchaseOps(b, name, l.rep, l.price);
+    if (l.loc !== 'none') { addStockOps(b, { name, qty: l.qty, unit: l.unit, loc: l.loc, exp: l.exp || null, rep: l.rep }); n++; }
+    bought.add(norm(name));
+    const key = rawKey(l.raw);
+    if (rc.remember && key.length >= 3 && (name !== l.aiName || l.loc !== l.aiLoc || l.known)) {
+      b.set(dref('aliases', key), { raw: l.raw, name, loc: l.loc, rep: l.rep, unit: l.unit, ...stamp() }); if (!l.known) fixes++;
+    }
+  });
+  // Ciò che hai comprato esce dalla lista e fa ripartire i promemoria
+  state.list.filter(i => !i.done && bought.has(norm(i.name))).forEach(i => b.delete(dref('list', i.id)));
+  state.reminders.filter(r => bought.has(norm(r.name))).forEach(r => b.update(dref('reminders', r.id), { next: isoIn(r.every), ...stamp() }));
+  commit(b); closeSheet(); rc = null;
+  toast(`${n} prodott${n === 1 ? 'o' : 'i'} in casa${fixes ? ` · ${fixes} correzion${fixes === 1 ? 'e ricordata' : 'i ricordate'}` : ''}`);
 }
 
 /* --- Ricette --- */
@@ -744,9 +861,14 @@ document.addEventListener('click', e => {
     toast(n ? `${n} ingredient${n === 1 ? 'e' : 'i'} in lista` : 'Già tutto in lista'); return;
   }
   if (d.addrem) { const r = state.reminders.find(x => x.id === d.addrem); if (r) { addListItem(r.name, { qty: r.qty, rep: r.rep, src: 'promemoria' }); toast(`${r.name} in lista`); } return; }
+  if (d.ron !== undefined) { rc.lines[+d.ron].on = !rc.lines[+d.ron].on; drawReceipt(); return; }
+  if (d.rinc !== undefined) { rc.lines[+d.rinc].on = true; drawReceipt(); return; }
   if (d.delIng !== undefined || d.deling !== undefined) { const k = d.delIng ?? d.deling; document.querySelector(`[data-ing="${k}"]`)?.remove(); return; }
   switch (d.act) {
     case 'barcode': sheetBarcode(); break;
+    case 'receipt': sheetReceipt(); break;
+    case 'rremember': rc.remember = !rc.remember; drawReceipt(); break;
+    case 'rsave': saveReceipt(); break;
     case 'manual': sheetManual(); break;
     case 'phase2': toast(`${d.what || 'Questa funzione'} arriva nella prossima versione`); break;
     case 'install': if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; } break;
@@ -833,6 +955,22 @@ document.addEventListener('submit', e => {
     closeSheet(); toast(f.dataset.id ? 'Promemoria aggiornato' : 'Promemoria creato'); return;
   }
   if (f.id === 'eanForm') { const c = v('eanIn').replace(/\D/g, ''); if (c.length >= 8) { stopScanner(); lookupBarcode(c); } else toast('Il codice ha da 8 a 13 cifre'); }
+});
+
+// Campi dello scontrino: aggiornano la riga senza ridisegnare (il cursore resta dov'è)
+document.addEventListener('input', e => {
+  const d = e.target.dataset;
+  if (d.rfield && d.ri !== undefined && rc) {
+    const l = rc.lines[+d.ri];
+    l[d.rfield] = ['qty', 'price'].includes(d.rfield) ? num(e.target.value) : e.target.value;
+    if (d.rfield === 'price' || d.rfield === 'qty') {
+      const sum = rc.lines.filter(x => x.on).reduce((a, x) => a + (num(x.price) || 0), 0);
+      const b = document.querySelector('.sheet .note b'); if (b) b.textContent = eur(sum);
+    }
+  }
+});
+document.addEventListener('change', e => {
+  if ((e.target.id === 'rcam' || e.target.id === 'rlib') && e.target.files?.[0]) readReceipt(e.target.files[0]);
 });
 
 $('fab').addEventListener('click', sheetAdd);
