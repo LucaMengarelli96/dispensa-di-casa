@@ -35,7 +35,7 @@ Dal pallino in alto a destra: «Condividi link». Chi apre il link e accede con 
 
 Il codice è in `apps-script/Code.gs` ed è pubblicato come applicazione web sul progetto «Dispensa di Casa - Server».
 Dopo ogni modifica: Esegui il deployment → Gestisci deployment → modifica (matita) → Versione: Nuova versione → Esegui il deployment. L'indirizzo resta lo stesso.
-La chiave Gemini sta solo nelle proprietà dello script (`GEMINI_API_KEY`). Lo script sceglie da solo il modello Flash disponibile e ricorda l'ultimo che ha risposto.
+La chiave Gemini sta solo nelle proprietà dello script (`GEMINI_API_KEY`). Modello principale: Gemini 3.5 Flash-Lite (costante MODELLO_PREFERITO, oppure proprietà GEMINI_MODEL); se non risponde lo script passa da solo agli altri Flash-Lite e poi ai Flash.
 
 ## Prossimi passi
 

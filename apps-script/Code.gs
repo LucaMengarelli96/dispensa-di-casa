@@ -4,12 +4,14 @@
  *
  * Proprietà dello script (Impostazioni progetto → Proprietà dello script):
  *   GEMINI_API_KEY  chiave creata su https://aistudio.google.com/apikey  (obbligatoria)
- *   GEMINI_MODEL    facoltativa: modello preferito; se manca usa il Flash più recente
+ *   GEMINI_MODEL    facoltativa: modello preferito al posto di MODELLO_PREFERITO
  */
 
 // Chiave pubblica del progetto Firebase: serve solo a verificare chi fa la richiesta.
 const FIREBASE_API_KEY = 'AIzaSyCgspbazrVlNVL2kpujFb0nNB4Kn3c9x2I';
 const MAX_RECEIPTS_PER_DAY = 40;
+// Modello scelto: veloce (pochi secondi) e con quota gratuita ampia. Se non risponde si passa ai successivi.
+const MODELLO_PREFERITO = 'gemini-3.5-flash-lite';
 const REPARTI = ['Frutta e verdura', 'Pane e forno', 'Latticini e frigo', 'Carne e pesce', 'Pasta e dispensa', 'Bevande', 'Surgelati', 'Casa e igiene', 'Altro'];
 
 function doGet() {
@@ -82,8 +84,8 @@ function readReceipt_(req) {
   const out = gemini_([
     { inlineData: { mimeType: req.mime || 'image/jpeg', data: req.image } },
     { text: prompt },
-  ]);
-  const lines = (out.lines || []).map(function (l) {
+  ], RECEIPT_SCHEMA);
+  const lines = linesOf_(out).map(function (l) {
     return {
       raw: String(l.raw || '').slice(0, 120),
       name: String(l.name || l.raw || '').slice(0, 80),
@@ -99,40 +101,74 @@ function readReceipt_(req) {
   return { store: out.store || null, date: out.date || null, total: Number(out.total) || null, lines: lines, model: model_() };
 }
 
+// Struttura della risposta imposta al modello (evita JSON con forme diverse da un modello all'altro)
+const RECEIPT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    store: { type: 'STRING', nullable: true },
+    date: { type: 'STRING', nullable: true },
+    total: { type: 'NUMBER', nullable: true },
+    lines: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          raw: { type: 'STRING' }, name: { type: 'STRING' }, qty: { type: 'NUMBER' },
+          unit: { type: 'STRING', enum: ['g', 'ml', 'pz', 'conf'] }, price: { type: 'NUMBER' },
+          loc: { type: 'STRING', enum: ['frigo', 'dispensa', 'freezer', 'none'] },
+          rep: { type: 'STRING', enum: REPARTI },
+          expDays: { type: 'INTEGER', nullable: true }, skip: { type: 'STRING', nullable: true },
+        },
+        required: ['raw', 'name', 'qty', 'unit', 'price', 'loc', 'rep'],
+      },
+    },
+  },
+  required: ['lines'],
+};
+
+// Trova l'elenco delle righe anche se il modello ha usato una forma diversa
+function linesOf_(out) {
+  if (Array.isArray(out)) return out;
+  if (out && Array.isArray(out.lines)) return out.lines;
+  for (const k in out) if (Array.isArray(out[k])) return out[k];
+  return [];
+}
+
 /* ---------- Gemini ---------- */
 
-function gemini_(parts) {
+function gemini_(parts, schema) {
   const key = apiKey_();
   const cache = CacheService.getScriptCache();
-  const good = cache.get('lastGood');
-  let models = models_().slice(0, 4);
-  // Prima il modello che ha funzionato l'ultima volta, poi gli altri dal più recente
-  if (good && models.indexOf(good) > 0) models = [good].concat(models.filter(function (m) { return m !== good; }));
+  const models = models_().slice(0, 4);
   let lastErr = '';
   for (let i = 0; i < models.length; i++) {
-    const t0 = Date.now();
-    const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + models[i] + ':generateContent', {
-      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
-      payload: JSON.stringify({
-        contents: [{ role: 'user', parts: parts }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
-      }),
-    });
-    const code = res.getResponseCode();
-    console.log('Gemini ' + models[i] + ': ' + code + ' in ' + (Date.now() - t0) + ' ms');
-    if (code === 200) {
-      cache.put('lastGood', models[i], 3600);
-      const body = JSON.parse(res.getContentText());
-      const cand = body.candidates && body.candidates[0];
-      const text = cand && cand.content && cand.content.parts ? cand.content.parts.map(function (p) { return p.text || ''; }).join('') : '';
-      if (!text) throw new Error('L\'AI non ha risposto: prova con una foto più nitida');
-      const clean = text.replace(/^\s*```(json)?/i, '').replace(/```\s*$/, '');
-      try { return JSON.parse(clean); } catch (e) { throw new Error('Risposta dell\'AI non leggibile: riprova'); }
+    let useSchema = !!schema;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const config = { responseMimeType: 'application/json', temperature: 0.1 };
+      if (useSchema) config.responseSchema = schema;
+      const t0 = Date.now();
+      const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + models[i] + ':generateContent', {
+        method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
+        payload: JSON.stringify({ contents: [{ role: 'user', parts: parts }], generationConfig: config }),
+      });
+      const code = res.getResponseCode();
+      console.log('Gemini ' + models[i] + (useSchema ? ' (schema)' : '') + ': ' + code + ' in ' + (Date.now() - t0) + ' ms');
+      if (code === 200) {
+        const body = JSON.parse(res.getContentText());
+        const cand = body.candidates && body.candidates[0];
+        const text = cand && cand.content && cand.content.parts ? cand.content.parts.map(function (p) { return p.text || ''; }).join('') : '';
+        if (!text) throw new Error('L\'AI non ha risposto: prova con una foto più nitida');
+        const clean = text.replace(/^\s*```(json)?/i, '').replace(/```\s*$/, '');
+        try { return JSON.parse(clean); } catch (e) { throw new Error('Risposta dell\'AI non leggibile: riprova'); }
+      }
+      lastErr = code + ' ' + res.getContentText().slice(0, 160);
+      // Modello che non accetta lo schema: riprova senza
+      if (code === 400 && useSchema) { useSchema = false; continue; }
+      // Modello ritirato o senza quota gratuita: lo salto per qualche ora
+      if (code === 404 || code === 429) cache.put('skip:' + models[i], '1', code === 404 ? 21600 : 600);
+      break;
     }
-    lastErr = code + ' ' + res.getContentText().slice(0, 160);
-    if (models[i] === good) cache.remove('lastGood');
-    // 503 sovraccarico, 500 errore temporaneo, 429 quota esaurita, 404 modello ritirato: passa al successivo
-    if ([429, 500, 503, 404].indexOf(code) < 0) throw new Error('Errore AI ' + lastErr);
+    if (!/^(429|500|503|404)/.test(lastErr)) throw new Error('Errore AI ' + lastErr);
   }
   if (/^429/.test(lastErr)) throw new Error('Limite gratuito dell\'AI raggiunto: riprova tra qualche minuto');
   throw new Error('L\'AI è sovraccarica in questo momento: riprova tra un minuto');
@@ -144,11 +180,11 @@ function apiKey_() {
   return key;
 }
 
-// Elenco dei modelli Flash disponibili per la chiave, dal più recente (esclusi lite, immagini, audio). Ricordato per 6 ore.
+// Modelli in ordine di preferenza: quello scelto, poi gli altri Flash-Lite e infine i Flash, dal più recente.
+// L'elenco dei modelli disponibili per la chiave viene ricordato per 6 ore.
 function models_() {
-  const props = PropertiesService.getScriptProperties();
-  const forced = props.getProperty('GEMINI_MODEL');
   const cache = CacheService.getScriptCache();
+  const first = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL') || MODELLO_PREFERITO;
   let list = JSON.parse(cache.get('models') || 'null');
   if (!list) {
     const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
@@ -158,13 +194,14 @@ function models_() {
     const all = (JSON.parse(res.getContentText()).models || [])
       .filter(function (m) { return (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0; })
       .map(function (m) { return m.name.replace('models/', ''); })
-      .filter(function (n) { return /flash/.test(n) && !/image|tts|live|audio|embed/.test(n); });
-    const rank = function (n) { return (/lite/.test(n) ? 2 : 0) + (/preview|exp/.test(n) ? 1 : 0); };
+      .filter(function (n) { return /^gemini-[\d.]+-flash/.test(n) && !/image|tts|live|audio|embed/.test(n); });
+    const rank = function (n) { return (/lite/.test(n) ? 0 : 2) + (/preview|exp/.test(n) ? 1 : 0); };
     list = all.sort(function (a, b) { return rank(a) - rank(b) || version_(b) - version_(a) || a.length - b.length; });
     if (!list.length) throw new Error('Nessun modello Gemini Flash disponibile per questa chiave');
     cache.put('models', JSON.stringify(list), 21600);
   }
-  return forced ? [forced].concat(list.filter(function (n) { return n !== forced; })) : list;
+  return [first].concat(list.filter(function (n) { return n !== first; }))
+    .filter(function (n) { return !cache.get('skip:' + n); });
 }
 function model_() { return models_()[0]; }
 function version_(name) { const m = name.match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; }
@@ -178,10 +215,11 @@ function json_(obj) {
 // Esegui questa funzione dall'editor per controllare chiave e modello: il risultato compare nel log.
 function prova() {
   CacheService.getScriptCache().remove('models');
-  PropertiesService.getScriptProperties().deleteProperty('GEMINI_MODEL'); // azzera la scelta salvata dalla versione precedente
-  const m = models_().slice(0, 3).join(', ');
-  const out = gemini_([{ text: 'Scontrino di prova:\nLATTE PS UHT 1L 1,29\nLATTE PS UHT 1L 1,29\nMOZZ.BUF.CAMP.DOP 250G 3,49\nSHOPPER 0,10\nTOTALE 6,17\n' +
-    'Restituisci SOLO JSON {"lines":[{"raw":string,"name":string,"qty":number,"unit":string,"price":number,"skip":string|null}]}' }]);
-  Logger.log('Modelli in ordine di preferenza: ' + m);
-  Logger.log(JSON.stringify(out, null, 2));
+  console.log('Modelli in ordine di preferenza: ' + models_().slice(0, 4).join(', '));
+  const t0 = Date.now();
+  const out = gemini_([{ text: 'Testo di uno scontrino italiano, oggi è ' + Utilities.formatDate(new Date(), 'Europe/Rome', 'yyyy-MM-dd') + ':\n' +
+    'LATTE PS UHT 1L 1,29\nLATTE PS UHT 1L 1,29\nMOZZ.BUF.CAMP.DOP 250G 3,49\nZUCCH.SCURE KG0,612 1,52\nSCONTO FIDATY -0,50\nSHOPPER 0,10\nTOTALE 7,19\n' +
+    'Per ogni riga: raw senza prezzo, name nome chiaro in italiano senza abbreviazioni, qty e unit (g, ml, pz, conf), price, loc, rep, expDays, skip (motivo se non è un prodotto).' }], RECEIPT_SCHEMA);
+  console.log('Tempo totale: ' + (Date.now() - t0) + ' ms');
+  console.log(JSON.stringify(linesOf_(out).map(function (l) { return [l.raw, l.name, l.qty + ' ' + l.unit, l.price, l.loc, l.skip].join(' | '); }), null, 1));
 }
