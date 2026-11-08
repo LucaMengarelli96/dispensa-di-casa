@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Regole di sicurezza di Dispensa di Casa.
+// Ogni famiglia è un documento households/{hid}; solo chi è in "members" legge e scrive i suoi dati.
+// Per entrare con il link di invito ci si può solo AGGIUNGERE ai membri (serve conoscere l'ID della famiglia).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isMember(hid) {
+      return signedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /households/{hid} {
+      allow read: if signedIn() && request.auth.uid in resource.data.members;
+
+      allow create: if signedIn()
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.createdBy == request.auth.uid;
+
+      // I membri possono aggiornare la famiglia (nome, membri, nomi)
+      allow update: if signedIn() && request.auth.uid in resource.data.members
+        && request.resource.data.members.size() > 0;
+
+      // Chi ha il link di invito può solo aggiungere sé stesso e il proprio nome
+      allow update: if signedIn()
+        && !(request.auth.uid in resource.data.members)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'memberNames'])
+        && request.resource.data.members.hasAll(resource.data.members)
+        && request.resource.data.members.removeAll(resource.data.members).hasOnly([request.auth.uid])
+        && request.resource.data.memberNames.diff(resource.data.memberNames).affectedKeys().hasOnly([request.auth.uid]);
+
+      allow delete: if false;
+
+      // Scorte, lista, ricette, promemoria, acquisti, codici a barre
+      match /{coll}/{docId} {
+        allow read, write: if isMember(hid);
+      }
+    }
+  }
+}

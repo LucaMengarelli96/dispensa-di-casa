@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dispensa di Casa</title>
+<meta name="description" content="Spesa, dispensa, ricette e promemoria per la famiglia">
+<meta name="theme-color" content="#1d6b47">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dispensa">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>.shell{padding-top:env(safe-area-inset-top)}</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="top" id="topbar" hidden>
+    <h1 id="title">Oggi</h1>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="sync" id="sync"><i></i><span id="syncText">Collegamento…</span></span>
+      <button class="family" id="family" aria-label="Famiglia e impostazioni"></button>
+    </div>
+  </header>
+  <main id="view" aria-live="polite"><div class="spinner" role="progressbar" aria-label="Caricamento"></div></main>
+  <button class="fab" id="fab" aria-label="Aggiungi prodotti" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+  <nav class="tabs" id="tabs" hidden></nav>
+  <div id="overlay"></div>
+  <div id="toastHost"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+<script type="module" src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>
