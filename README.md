@@ -11,6 +11,7 @@ Web app di famiglia per lista della spesa, scorte di frigo, dispensa e freezer, 
 | Accesso | Account Google tramite Firebase Authentication |
 | Codici a barre | Libreria html5-qrcode + database Open Food Facts |
 | Hosting | GitHub Pages |
+| Lettura scontrini | Script Apps Script `apps-script/Code.gs` (web app) che chiama Gemini Flash |
 
 ## Dati in Firestore
 
@@ -22,6 +23,7 @@ Web app di famiglia per lista della spesa, scorte di frigo, dispensa e freezer, 
 - `households/{id}/reminders`: acquisti periodici
 - `households/{id}/purchases`: prezzi pagati
 - `households/{id}/barcodes`: nomi scelti per ogni codice a barre
+- `households/{id}/aliases`: correzioni dei nomi letti dagli scontrini
 
 Le regole di sicurezza sono in `firestore.rules` e vanno copiate nella console Firebase (Firestore → Regole).
 
@@ -29,8 +31,13 @@ Le regole di sicurezza sono in `firestore.rules` e vanno copiate nella console F
 
 Dal pallino in alto a destra: «Condividi link». Chi apre il link e accede con Google entra nella stessa dispensa.
 
-## Prossima versione
+## Server Apps Script
 
-- Foto dello scontrino letta dall'AI (Gemini)
+Il codice è in `apps-script/Code.gs` ed è pubblicato come applicazione web sul progetto «Dispensa di Casa - Server».
+Dopo ogni modifica: Esegui il deployment → Gestisci deployment → modifica (matita) → Versione: Nuova versione → Esegui il deployment. L'indirizzo resta lo stesso.
+La chiave Gemini sta solo nelle proprietà dello script (`GEMINI_API_KEY`). Lo script sceglie da solo il modello Flash disponibile e ricorda l'ultimo che ha risposto.
+
+## Prossimi passi
+
 - «Suggeriscimi qualcosa» e import di ricette da link
-- Notifiche dei promemoria (Apps Script)
+- Notifiche push dei promemoria

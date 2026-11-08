@@ -1,6 +1,6 @@
 // Service worker: tiene in cache l'app e le librerie, così si apre anche senza rete.
 // I dati non passano da qui: li gestisce la cache offline di Firestore.
-const VERSION = 'dispensa-v3';
+const VERSION = 'dispensa-v4';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './firebase.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 const CDN = /^https:\/\/(www\.gstatic\.com\/firebasejs|cdn\.jsdelivr\.net\/npm|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;
 

@@ -13,7 +13,7 @@ const LOCS = { dispensa: 'Dispensa', frigo: 'Frigo', freezer: 'Freezer' };
 const UNITS = ['pz', 'g', 'ml', 'conf'];
 const STEP = { g: 100, ml: 250, pz: 1, conf: 1 };
 // Indirizzo del server Apps Script (lettura scontrini con l'AI)
-const SERVER_URL = '';
+const SERVER_URL = 'https://script.google.com/macros/s/AKfycbyr5gDrqyHpSuvT-lUkdMqSCk7sLhnE8a2L03D7mfIGdmEwL70VnQgRqCF-VswLH2ceiQ/exec';
 const COLORS = ['#1d6b47', '#b8392a', '#9a6212', '#2f5d9e', '#7a3fa0', '#2a7f86'];
 
 const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
