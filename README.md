@@ -37,7 +37,12 @@ Il codice è in `apps-script/Code.gs` ed è pubblicato come applicazione web sul
 Dopo ogni modifica: Esegui il deployment → Gestisci deployment → modifica (matita) → Versione: Nuova versione → Esegui il deployment. L'indirizzo resta lo stesso.
 La chiave Gemini sta solo nelle proprietà dello script (`GEMINI_API_KEY`). Modello principale: Gemini 3.5 Flash-Lite (costante MODELLO_PREFERITO, oppure proprietà GEMINI_MODEL); se non risponde lo script passa da solo agli altri Flash-Lite e poi ai Flash.
 
+## Ricette con l'AI
+
+- «Suggeriscimi qualcosa»: lo script riceve gli ingredienti che scadono entro 5 giorni e le scorte, e propone 3 piatti (al massimo 2 ingredienti da comprare). Ogni idea si può salvare, mandare in lista ciò che manca o cercare su GialloZafferano.
+- «Importa da link»: lo script legge i dati strutturati schema.org (Recipe) della pagina; se mancano, usa il testo. Si salvano nome, porzioni, tempo, ingredienti e link all'originale, non il procedimento.
+- Gli ingredienti «q.b.» (sale, pepe, olio…) non contano per capire se una ricetta è pronta e non vengono scalati dalle scorte.
+
 ## Prossimi passi
 
-- «Suggeriscimi qualcosa» e import di ricette da link
 - Notifiche push dei promemoria

@@ -10,6 +10,8 @@
 // Chiave pubblica del progetto Firebase: serve solo a verificare chi fa la richiesta.
 const FIREBASE_API_KEY = 'AIzaSyCgspbazrVlNVL2kpujFb0nNB4Kn3c9x2I';
 const MAX_RECEIPTS_PER_DAY = 40;
+const MAX_IDEAS_PER_DAY = 40;
+const MAX_IMPORTS_PER_DAY = 40;
 // Modello scelto: veloce (pochi secondi) e con quota gratuita ampia. Se non risponde si passa ai successivi.
 const MODELLO_PREFERITO = 'gemini-3.5-flash-lite';
 const REPARTI = ['Frutta e verdura', 'Pane e forno', 'Latticini e frigo', 'Carne e pesce', 'Pasta e dispensa', 'Bevande', 'Surgelati', 'Casa e igiene', 'Altro'];
@@ -25,6 +27,14 @@ function doPost(e) {
     if (req.action === 'receipt') {
       limit_(uid, 'receipt', MAX_RECEIPTS_PER_DAY);
       return json_(Object.assign({ ok: true }, readReceipt_(req)));
+    }
+    if (req.action === 'ideas') {
+      limit_(uid, 'ideas', MAX_IDEAS_PER_DAY);
+      return json_(Object.assign({ ok: true }, suggestIdeas_(req)));
+    }
+    if (req.action === 'import') {
+      limit_(uid, 'import', MAX_IMPORTS_PER_DAY);
+      return json_(Object.assign({ ok: true }, importRecipe_(req)));
     }
     return json_({ ok: false, error: 'Azione sconosciuta' });
   } catch (err) {
@@ -134,6 +144,169 @@ function linesOf_(out) {
   return [];
 }
 
+/* ---------- Idee: piatti con ciò che scade prima ---------- */
+
+const ING_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    n: { type: 'STRING' }, q: { type: 'NUMBER' }, u: { type: 'STRING', enum: ['g', 'ml', 'pz', 'conf'] },
+    opt: { type: 'BOOLEAN' }, raw: { type: 'STRING', nullable: true },
+  },
+  required: ['n', 'q', 'u', 'opt'],
+};
+
+const IDEAS_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    ideas: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING' }, serv: { type: 'INTEGER' }, time: { type: 'INTEGER' },
+          why: { type: 'STRING' }, search: { type: 'STRING' },
+          uses: { type: 'ARRAY', items: { type: 'STRING' } },
+          missing: { type: 'ARRAY', items: { type: 'STRING' } },
+          ings: { type: 'ARRAY', items: ING_SCHEMA },
+        },
+        required: ['name', 'serv', 'time', 'why', 'search', 'uses', 'missing', 'ings'],
+      },
+    },
+  },
+  required: ['ideas'],
+};
+
+const ING_RULES = [
+  'Regole per gli ingredienti ("ings"):',
+  '- "n": se l\'ingrediente è nell\'elenco della dispensa usa ESATTAMENTE quel nome; altrimenti un nome breve e chiaro in italiano',
+  '- "q" e "u": quantità per le porzioni indicate, in "g", "ml", "pz" (pezzi, es. uova, zucchine) o "conf"',
+  '- "opt": true per sale, pepe, spezie, olio, acqua e tutto ciò che è "q.b." (in quel caso "q": 0)',
+].join('\n');
+
+function stockLines_(stock) {
+  return (stock || []).slice(0, 250).map(function (s) {
+    return '- ' + s.name + (s.qty ? ' (' + s.qty + ' ' + (s.unit || '') + ')' : '') + (s.days != null ? ', scade tra ' + s.days + ' giorni' : '');
+  }).join('\n');
+}
+
+function suggestIdeas_(req) {
+  const expiring = req.expiring || [];
+  const prompt = [
+    'Sei un cuoco di casa italiano. Proponi ' + (req.count || 3) + ' piatti semplici e diversi tra loro, da preparare a casa in famiglia.',
+    expiring.length
+      ? 'Usa SOPRATTUTTO questi ingredienti, che scadono presto (prima quelli che scadono prima):\n' + stockLines_(expiring)
+      : 'Non ci sono ingredienti in scadenza: usa quello che c\'è in dispensa.',
+    'Ingredienti disponibili in casa:\n' + stockLines_(req.stock),
+    'Ogni piatto può richiedere al massimo 2 ingredienti da comprare (non contano sale, pepe, olio, spezie, acqua).',
+    req.exclude && req.exclude.length ? 'Non riproporre questi piatti: ' + req.exclude.join(', ') + '.' : '',
+    'Per ogni piatto: "name" nome del piatto; "serv" porzioni (' + (req.serv || 4) + '); "time" minuti totali;',
+    '"why" una frase breve su cosa usa che scade; "search" 2-4 parole per cercare la ricetta su un sito di cucina;',
+    '"uses" i nomi ESATTI degli ingredienti in scadenza che usa; "missing" i nomi degli ingredienti da comprare; "ings" tutti gli ingredienti.',
+    ING_RULES,
+  ].join('\n');
+  const out = gemini_([{ text: prompt }], IDEAS_SCHEMA);
+  const ideas = (out.ideas || linesOf_(out)).slice(0, 5).map(function (i) {
+    return {
+      name: String(i.name || '').slice(0, 80), serv: Math.max(1, Number(i.serv) || 4), time: Math.max(0, Number(i.time) || 0),
+      why: String(i.why || '').slice(0, 200), search: String(i.search || i.name || '').slice(0, 60),
+      uses: (i.uses || []).map(String).slice(0, 10), missing: (i.missing || []).map(String).slice(0, 5),
+      ings: cleanIngs_(i.ings),
+    };
+  });
+  return { ideas: ideas };
+}
+
+function cleanIngs_(ings) {
+  return (ings || []).slice(0, 40).map(function (x) {
+    const opt = !!x.opt || !(Number(x.q) > 0);
+    return {
+      n: String(x.n || '').slice(0, 60), q: opt ? 0 : Number(x.q), u: ['g', 'ml', 'pz', 'conf'].indexOf(x.u) >= 0 ? x.u : 'pz',
+      opt: opt, raw: x.raw ? String(x.raw).slice(0, 120) : null,
+    };
+  }).filter(function (x) { return x.n; });
+}
+
+/* ---------- Import di una ricetta da link ---------- */
+
+const IMPORT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    name: { type: 'STRING' }, serv: { type: 'INTEGER' }, time: { type: 'INTEGER', nullable: true },
+    ings: { type: 'ARRAY', items: ING_SCHEMA },
+  },
+  required: ['name', 'serv', 'ings'],
+};
+
+function importRecipe_(req) {
+  const url = String(req.url || '').trim();
+  if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error('Indirizzo non valido');
+  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+  const code = res.getResponseCode();
+  if (code === 403 || code === 401) throw new Error('Il sito non permette la lettura automatica: inserisci la ricetta a mano');
+  if (code !== 200) throw new Error('Pagina non raggiungibile (errore ' + code + ')');
+  const html = res.getContentText();
+  const ld = findRecipeLd_(html);
+  let source;
+  if (ld && ld.recipeIngredient && ld.recipeIngredient.length) {
+    source = [
+      'Ricetta: ' + text_(ld.name),
+      'Porzioni: ' + text_(ld.recipeYield),
+      'Tempo: ' + (minutes_(ld.totalTime) || (minutes_(ld.prepTime) + minutes_(ld.cookTime)) || 'non indicato') + ' minuti',
+      'Ingredienti:', [].concat(ld.recipeIngredient).map(function (s) { return '- ' + text_(s); }).join('\n'),
+    ].join('\n');
+  } else {
+    // Nessun dato strutturato: si passa il testo della pagina e l'AI estrae solo nome, porzioni e ingredienti
+    source = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').slice(0, 15000);
+  }
+  const prompt = [
+    'Da questa ricetta estrai solo: "name" nome del piatto, "serv" porzioni (numero; se non indicato 4), "time" minuti totali (null se non indicato), "ings" ingredienti.',
+    'Per ogni ingrediente metti in "raw" il testo originale della riga.',
+    ING_RULES,
+    'Elenco della dispensa (usa questi nomi quando l\'ingrediente è lo stesso):\n' + (req.stockNames || []).slice(0, 300).join(', '),
+    'Se il testo non contiene una ricetta, restituisci "ings" vuoto.',
+    '---', source,
+  ].join('\n');
+  const out = gemini_([{ text: prompt }], IMPORT_SCHEMA);
+  const ings = cleanIngs_(out.ings);
+  if (!ings.length) throw new Error('In questa pagina non ho trovato una ricetta');
+  return {
+    name: String(out.name || text_(ld && ld.name) || 'Ricetta').slice(0, 80),
+    serv: Math.max(1, Number(out.serv) || 4), time: Number(out.time) || null,
+    ings: ings, url: url, host: url.replace(/^https?:\/\/(www\.)?/i, '').split('/')[0], structured: !!ld,
+  };
+}
+
+// Cerca nella pagina i dati strutturati schema.org di tipo Recipe (usati dalla maggior parte dei siti di ricette)
+function findRecipeLd_(html) {
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    let data;
+    try { data = JSON.parse(m[1].trim()); } catch (e) { continue; }
+    const found = walkLd_(data);
+    if (found) return found;
+  }
+  return null;
+}
+function walkLd_(node) {
+  if (!node || typeof node !== 'object') return null;
+  if (Array.isArray(node)) { for (let i = 0; i < node.length; i++) { const f = walkLd_(node[i]); if (f) return f; } return null; }
+  const t = [].concat(node['@type'] || []);
+  if (t.indexOf('Recipe') >= 0) return node;
+  return walkLd_(node['@graph']) || walkLd_(node.mainEntity);
+}
+function text_(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(text_).join(', ');
+  if (typeof v === 'object') return text_(v.name || v['@value'] || '');
+  return String(v).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#39;|&rsquo;/g, "'").replace(/\s+/g, ' ').trim();
+}
+function minutes_(iso) {
+  const m = String(iso || '').match(/P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?/);
+  return m ? (Number(m[1] || 0) * 1440 + Number(m[2] || 0) * 60 + Number(m[3] || 0)) : 0;
+}
+
 /* ---------- Gemini ---------- */
 
 function gemini_(parts, schema) {
@@ -222,4 +395,18 @@ function prova() {
     'Per ogni riga: raw senza prezzo, name nome chiaro in italiano senza abbreviazioni, qty e unit (g, ml, pz, conf), price, loc, rep, expDays, skip (motivo se non è un prodotto).' }], RECEIPT_SCHEMA);
   console.log('Tempo totale: ' + (Date.now() - t0) + ' ms');
   console.log(JSON.stringify(linesOf_(out).map(function (l) { return [l.raw, l.name, l.qty + ' ' + l.unit, l.price, l.loc, l.skip].join(' | '); }), null, 1));
+}
+
+// Prova dell'import da link e delle idee dall'editor
+function provaRicette() {
+  const t0 = Date.now();
+  const imp = importRecipe_({ url: 'https://ricette.giallozafferano.it/Spaghetti-alla-Carbonara.html', stockNames: ['Spaghetti', 'Uova', 'Parmigiano', 'Pecorino', 'Guanciale', 'Pepe nero'] });
+  console.log('Import in ' + (Date.now() - t0) + ' ms, dati strutturati: ' + imp.structured);
+  console.log(imp.name + ' · ' + imp.serv + ' porzioni · ' + imp.time + ' min');
+  console.log(imp.ings.map(function (i) { return i.n + ' ' + (i.opt ? 'q.b.' : i.q + ' ' + i.u) + '  ← ' + i.raw; }).join('\n'));
+  const t1 = Date.now();
+  const id = suggestIdeas_({ expiring: [{ name: 'Zucchine', qty: 3, unit: 'pz', days: 2 }, { name: 'Mozzarella', qty: 1, unit: 'pz', days: 1 }],
+    stock: [{ name: 'Uova', qty: 6, unit: 'pz' }, { name: 'Parmigiano', qty: 200, unit: 'g' }, { name: 'Spaghetti', qty: 1000, unit: 'g' }] });
+  console.log('Idee in ' + (Date.now() - t1) + ' ms');
+  console.log(id.ideas.map(function (i) { return i.name + ' (' + i.time + ' min) usa ' + i.uses.join(', ') + ' · manca ' + i.missing.join(', '); }).join('\n'));
 }

@@ -74,9 +74,10 @@ const REP_WORDS = [
 ];
 const guessRep = name => { const n = norm(name); for (const [rep, words] of REP_WORDS) if (words.split(' ').some(w => n.includes(w))) return rep; return 'Altro'; };
 const repOf = name => stockOf(name)?.rep || state.list.find(i => norm(i.name) === norm(name))?.rep || guessRep(name);
+const ingChip = i => { if (i.opt) return `<span class="chip">${esc(i.n)} q.b.</span>`; const have = totalOf(i.n) >= i.q; return `<span class="chip ${have ? '' : 'crit'}">${have ? '' : '✕ '}${esc(i.n)} ${fmtQty(i.q, i.u)}</span>`; };
 function recipeStatus(r, serv) {
   const f = (serv || r.serv) / r.serv;
-  const miss = (r.ings || []).filter(i => totalOf(i.n) < i.q * f);
+  const miss = (r.ings || []).filter(i => !i.opt && totalOf(i.n) < i.q * f);
   return { miss, ok: miss.length === 0 };
 }
 
@@ -370,11 +371,12 @@ function vHome() {
     <ul class="rows">${due.map(r => `
       <li class="row"><div class="grow"><div class="t">${esc(r.name)}</div><div class="s">ogni ${r.every} giorni · ${esc(r.qty || '')}</div></div>
       ${inList(r.name) ? '<span class="chip ok">In lista</span>' : `<button class="btn small" data-addrem="${r.id}">In lista</button>`}</li>`).join('')}</ul></section>` : ''}
-  ${ready.length ? `<section class="card">
+  <section class="card">
     <div class="card-h"><h2>Cosa cucino?</h2><button class="link" data-go="ricette">Ricette</button></div>
     <ul class="rows">${ready.slice(0, 3).map(r => `
       <li class="row"><div class="grow"><div class="t">${esc(r.name)}</div><div class="s">${r.serv} porzioni${r.time ? ' · ' + r.time + ' min' : ''} · tutto in casa</div></div>
-      <button class="btn small primary" data-cook="${r.id}">Cucina</button></li>`).join('')}</ul></section>` : ''}
+      <button class="btn small primary" data-cook="${r.id}">Cucina</button></li>`).join('')}</ul>
+    <div style="padding:${ready.length ? '4px' : '0'} 14px 14px"><button class="btn block" data-act="suggest">Suggeriscimi qualcosa con ciò che scade</button></div></section>
   ${vSpending()}
   <p class="note">Lista della spesa: <b class="num">${todo}</b> prodott${todo === 1 ? 'o' : 'i'} da prendere.</p>`;
 }
@@ -433,9 +435,10 @@ function vRicette() {
   if (f === 'quasi') rs = rs.filter(x => !x.st.ok);
   rs.sort((a, b) => a.st.miss.length - b.st.miss.length || a.r.name.localeCompare(b.r.name));
   return `
+  <button class="btn primary block" data-act="suggest">Suggeriscimi qualcosa</button>
   <div class="recipe-tools">
-    <button class="btn primary" data-act="newrecipe">Nuova ricetta</button>
-    <button class="btn" data-act="phase2" data-what="Suggerimenti AI e import da link">Idee AI <span class="soon">presto</span></button>
+    <button class="btn" data-act="import">Importa da link</button>
+    <button class="btn" data-act="newrecipe">Nuova ricetta</button>
   </div>
   <div class="seg" role="group" aria-label="Filtro ricette">
     ${[['tutte', 'Tutte'], ['pronte', 'Pronte ora'], ['quasi', 'Manca qualcosa']].map(([k, v]) => `<button aria-pressed="${f === k}" data-rf="${k}">${v}</button>`).join('')}
@@ -443,8 +446,8 @@ function vRicette() {
   ${rs.map(({ r, st }) => `
   <section class="card">
     <div class="card-h"><h2>${esc(r.name)}</h2>${st.ok ? '<span class="chip ok">Pronta</span>' : `<span class="chip warn">Manca${st.miss.length > 1 ? 'no' : ''} ${st.miss.length}</span>`}</div>
-    <p class="hint" style="padding:0 14px 8px;margin:0">${r.serv} porzioni${r.time ? ' · ' + r.time + ' min' : ''}${r.url ? ` · <a class="src-link" href="${esc(r.url)}" target="_blank" rel="noopener">Ricetta originale</a>` : ''}</p>
-    <div class="recipe-ings">${(r.ings || []).map(i => { const have = totalOf(i.n) >= i.q; return `<span class="chip ${have ? '' : 'crit'}">${have ? '' : '✕ '}${esc(i.n)} ${fmtQty(i.q, i.u)}</span>`; }).join('')}</div>
+    <p class="hint" style="padding:0 14px 8px;margin:0">${r.serv} porzioni${r.time ? ' · ' + r.time + ' min' : ''}${r.url ? ` · <a class="src-link" href="${esc(r.url)}" target="_blank" rel="noopener">${r.src === 'ai' ? 'Cerca su GialloZafferano' : 'Ricetta originale'}</a>` : ''}${r.src === 'ai' ? ' · idea AI' : ''}</p>
+    <div class="recipe-ings">${(r.ings || []).map(ingChip).join('')}</div>
     <div class="recipe-actions">
       ${st.ok ? `<button class="btn primary small" data-cook="${r.id}">Cucina e scala dalle scorte</button>` : `<button class="btn small" data-missing="${r.id}">Metti in lista ciò che manca</button>`}
       <button class="btn small ghost" data-editrecipe="${r.id}">Modifica</button>
@@ -707,7 +710,7 @@ function sheetCook(id) {
     sheet(r.name, `
       <div class="row" style="padding:0;border:0"><span class="grow s">Porzioni</span>
         <div class="stepper"><button data-serv="-1" aria-label="Meno porzioni">−</button><output class="num">${serv}</output><button data-serv="1" aria-label="Più porzioni">+</button></div></div>
-      <div class="card"><ul class="rows">${r.ings.map(i => { const need = i.q * f, have = totalOf(i.n), left = have - need, min = stockOf(i.n)?.min || 0; return `
+      <div class="card"><ul class="rows">${r.ings.filter(i => !i.opt).map(i => { const need = i.q * f, have = totalOf(i.n), left = have - need, min = stockOf(i.n)?.min || 0; return `
         <li class="row"><div class="grow"><div class="t">${esc(i.n)}</div><div class="s num">usi ${fmtQty(need, i.u)} · resta ${left >= 0 ? fmtQty(left, i.u) : '—'}</div></div>
         ${left < 0 ? '<span class="chip crit">Non basta</span>' : min > left ? '<span class="chip warn">Andrà in lista</span>' : '<span class="chip ok">Ok</span>'}</li>`; }).join('')}
       </ul></div>
@@ -717,7 +720,7 @@ function sheetCook(id) {
   sheetCook.adj = d => { serv = Math.max(1, serv + d); draw(); };
   sheetCook.ok = () => {
     const f = serv / r.serv, b = writeBatch(db);
-    r.ings.forEach(i => {
+    r.ings.filter(i => !i.opt).forEach(i => {
       let need = i.q * f;
       state.stock.filter(s => norm(s.name) === norm(i.n)).sort((a, c) => (a.exp || '9999').localeCompare(c.exp || '9999')).forEach(s => {
         if (need <= 0) return;
@@ -731,17 +734,18 @@ function sheetCook(id) {
   draw();
 }
 
-function sheetRecipe(id) {
-  const r = id ? state.recipes.find(x => x.id === id) : { name: '', serv: 4, time: '', ings: [{ n: '', q: '', u: 'g' }] };
+function sheetRecipe(id, prefill, note) {
+  const r = id ? state.recipes.find(x => x.id === id) : (prefill || { name: '', serv: 4, time: '', ings: [{ n: '', q: '', u: 'g' }] });
   if (!r) return;
   const names = [...new Set(state.stock.map(s => s.name))];
   const row = (i, k) => `<div class="ing-row" data-ing="${k}">
     <label class="field">Ingrediente<input list="stockNames" data-in="${k}" value="${esc(i.n)}"></label>
-    <label class="field">Qtà<input type="number" step="any" inputmode="decimal" data-iq="${k}" value="${i.q}"></label>
+    <label class="field">Qtà<input type="number" step="any" inputmode="decimal" data-iq="${k}" value="${i.opt ? '' : i.q}" placeholder="q.b."></label>
     <label class="field">Unità<select data-iu="${k}">${opts(UNITS, i.u)}</select></label>
     <button type="button" class="del" data-delIng="${k}" aria-label="Togli ingrediente">×</button></div>`;
-  sheet(id ? 'Modifica ricetta' : 'Nuova ricetta', `
-    <form id="recipeForm" data-id="${id || ''}" style="display:flex;flex-direction:column;gap:10px">
+  sheet(id ? 'Modifica ricetta' : prefill ? 'Controlla e salva' : 'Nuova ricetta', `
+    <form id="recipeForm" data-id="${id || ''}" data-src="${esc(prefill?.src || '')}" style="display:flex;flex-direction:column;gap:10px">
+      ${note ? `<p class="note" style="margin:0">${note}</p>` : ''}
       <label class="field">Nome<input id="rname" value="${esc(r.name)}" required></label>
       <div class="grid2">
         <label class="field">Porzioni<input id="rserv" type="number" min="1" value="${r.serv}"></label>
@@ -751,11 +755,97 @@ function sheetRecipe(id) {
       <datalist id="stockNames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
       <div id="ings" style="display:flex;flex-direction:column;gap:8px">${r.ings.map(row).join('')}</div>
       <button type="button" class="btn" data-act="addIng">Aggiungi ingrediente</button>
-      <p class="hint">Usa per gli ingredienti gli stessi nomi delle scorte (te li suggerisco mentre scrivi): così l'app sa cosa hai in casa.</p>
+      <p class="hint">Usa per gli ingredienti gli stessi nomi delle scorte (te li suggerisco mentre scrivi): così l'app sa cosa hai in casa. Lascia vuota la quantità per gli ingredienti «q.b.».</p>
       <button class="btn primary block" type="submit">Salva ricetta</button>
       ${id ? `<button type="button" class="btn block" data-act="delrecipe" data-id="${id}">Elimina ricetta</button>` : ''}
     </form>`);
   sheetRecipe.row = row;
+}
+
+/* --- Idee AI: piatti con ciò che scade prima --- */
+let ideas = [];
+const gzSearch = terms => 'https://www.giallozafferano.it/ricerca-ricette/' + String(terms).trim().toLowerCase().split(/\s+/).map(encodeURIComponent).join('+') + '/';
+function stockSummary() {
+  const by = new Map();
+  state.stock.forEach(s => {
+    const k = norm(s.name), d = daysTo(s.exp);
+    const x = by.get(k) || { name: s.name, qty: 0, unit: s.unit, days: null };
+    if (x.unit === s.unit) x.qty += s.qty;
+    if (d != null && (x.days == null || d < x.days)) x.days = d;
+    by.set(k, x);
+  });
+  return [...by.values()];
+}
+
+async function sheetSuggest(more) {
+  sheet('Cerco idee', `<div class="spinner" role="progressbar" aria-label="Ricerca"></div><p class="hint" style="text-align:center">Guardo cosa scade prima e cosa hai in casa…</p>`);
+  const all = stockSummary();
+  const expiring = all.filter(s => s.days != null && s.days >= 0 && s.days <= 5).sort((a, b) => a.days - b.days).slice(0, 15);
+  try {
+    const out = await callServer('ideas', {
+      expiring, stock: all.map(s => ({ name: s.name, qty: Math.round(s.qty * 10) / 10, unit: s.unit })),
+      exclude: more ? ideas.map(i => i.name) : [], count: 3, serv: 4,
+    });
+    ideas = out.ideas;
+    drawIdeas(expiring);
+  } catch (e) {
+    sheet('Idee non disponibili', `<p class="err">${esc(e.message)}</p><button class="btn primary block" data-act="suggest">Riprova</button>`);
+  }
+}
+
+function drawIdeas(expiring) {
+  const soon = new Map((expiring || []).map(s => [norm(s.name), s.days]));
+  const when = d => d === 0 ? 'oggi' : d === 1 ? 'domani' : 'tra ' + d + ' gg';
+  sheet('Idee per stasera', ideas.map((r, i) => {
+    const saved = state.recipes.some(x => norm(x.name) === norm(r.name));
+    const st = recipeStatus(r);
+    const missing = [...new Set([...st.miss.map(x => x.n), ...r.missing.filter(n => !totalOf(n))])];
+    return `<div class="rline">
+      <div class="top"><b>${esc(r.name)}</b><span class="hint">${r.serv} porz.${r.time ? ' · ' + r.time + ' min' : ''}</span></div>
+      ${r.why ? `<span class="hint">${esc(r.why)}</span>` : ''}
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${r.uses.map(n => `<span class="chip warn">${esc(n)}${soon.has(norm(n)) ? ' · ' + when(soon.get(norm(n))) : ''}</span>`).join('')}
+        ${missing.map(n => `<span class="chip crit">✕ ${esc(n)}</span>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${saved ? '<span class="chip ok">Salvata</span>' : `<button class="btn small primary" data-saveidea="${i}">Salva in Ricette</button>`}
+        ${missing.length ? `<button class="btn small" data-ideamiss="${i}">Metti in lista ciò che manca</button>` : ''}
+        <a class="src-link" href="${gzSearch(r.search)}" target="_blank" rel="noopener">Cerca su GialloZafferano</a>
+      </div></div>`;
+  }).join('') + `
+    <button class="btn block" data-act="moreideas">Altre idee</button>
+    <p class="hint">Proposte dell'AI: dosi indicative per ${ideas[0]?.serv || 4} persone. Per il procedimento cerca la ricetta su GialloZafferano.</p>`);
+  drawIdeas.expiring = expiring;
+}
+
+/* --- Import di una ricetta da link --- */
+function sheetImport(prefillUrl = '') {
+  sheet('Importa da link', `
+    <form id="impForm" style="display:flex;flex-direction:column;gap:10px">
+      <label class="field">Link della ricetta<input id="impUrl" type="text" inputmode="url" autocapitalize="off" autocomplete="off" value="${esc(prefillUrl)}" placeholder="https://ricette.giallozafferano.it/…" required></label>
+      <button class="btn primary block" type="submit">Leggi la ricetta</button>
+    </form>
+    <p class="hint">Copia il link dal browser (Condividi → Copia) e incollalo qui. Salvo nome, porzioni e ingredienti collegati alle tue scorte; il procedimento lo leggi sul sito.</p>`);
+  setTimeout(() => $('impUrl')?.focus(), 50);
+}
+
+async function importRecipe(text) {
+  const m = String(text).match(/https?:\/\/[^\s"'<>]+/i);
+  const url = m ? m[0] : (/^[\w-]+(\.[\w-]+)+\//.test(text.trim()) ? 'https://' + text.trim() : '');
+  if (!url) { toast('Incolla un link che inizi con https://'); return; }
+  const dup = state.recipes.find(r => r.url && r.url === url);
+  if (dup) { closeSheet(); state.tab = 'ricette'; render(); toast(`«${dup.name}» è già nelle ricette`); return; }
+  sheet('Leggo la ricetta', `<div class="spinner" role="progressbar" aria-label="Lettura"></div><p class="hint" style="text-align:center">${esc(url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0])}</p>`);
+  try {
+    const stockNames = [...new Set(state.stock.map(s => s.name))];
+    const r = await callServer('import', { url, stockNames });
+    const known = r.ings.filter(i => !i.opt && stockOf(i.n)).length;
+    sheetRecipe(null, { name: r.name, serv: r.serv, time: r.time || '', url: r.url, src: 'link', ings: r.ings },
+      `Da <b>${esc(r.host)}</b>: ${r.ings.length} ingredienti, ${known} già collegati alle tue scorte. Controlla nomi e quantità, poi salva.`);
+  } catch (e) {
+    sheet('Ricetta non letta', `<p class="err">${esc(e.message)}</p>
+      <button class="btn primary block" data-act="import">Prova un altro link</button><button class="btn block" data-act="newrecipe">Inserisci a mano</button>`);
+  }
 }
 
 /* --- Lista: modifica voce e fine spesa --- */
@@ -861,6 +951,19 @@ document.addEventListener('click', e => {
     toast(n ? `${n} ingredient${n === 1 ? 'e' : 'i'} in lista` : 'Già tutto in lista'); return;
   }
   if (d.addrem) { const r = state.reminders.find(x => x.id === d.addrem); if (r) { addListItem(r.name, { qty: r.qty, rep: r.rep, src: 'promemoria' }); toast(`${r.name} in lista`); } return; }
+  if (d.saveidea !== undefined) {
+    const r = ideas[+d.saveidea]; if (!r) return;
+    setDoc(dref('recipes', newId('recipes')), { name: cap(r.name), serv: r.serv, time: r.time || null, url: gzSearch(r.search), src: 'ai', ings: r.ings.map(i => ({ n: cap(i.n), q: i.q, u: i.u, opt: !!i.opt })), ...stamp() }).catch(fail);
+    state.recipes.push({ name: r.name }); drawIdeas(drawIdeas.expiring); toast('Ricetta salvata'); return;
+  }
+  if (d.ideamiss !== undefined) {
+    const r = ideas[+d.ideamiss]; if (!r) return; let n = 0;
+    const st = recipeStatus(r);
+    const need = new Map(st.miss.map(i => [norm(i.n), { n: i.n, qty: fmtQty(i.q, i.u) }]));
+    r.missing.filter(x => !totalOf(x)).forEach(x => { if (!need.has(norm(x))) need.set(norm(x), { n: x, qty: '' }); });
+    need.forEach(x => { if (!inList(x.n)) { addListItem(x.n, { qty: x.qty, src: 'ricetta', note: r.name }); state.list.push({ name: x.n }); n++; } });
+    toast(n ? `${n} ingredient${n === 1 ? 'e' : 'i'} in lista` : 'Già tutto in lista'); return;
+  }
   if (d.ron !== undefined) { rc.lines[+d.ron].on = !rc.lines[+d.ron].on; drawReceipt(); return; }
   if (d.rinc !== undefined) { rc.lines[+d.rinc].on = true; drawReceipt(); return; }
   if (d.delIng !== undefined || d.deling !== undefined) { const k = d.delIng ?? d.deling; document.querySelector(`[data-ing="${k}"]`)?.remove(); return; }
@@ -888,6 +991,9 @@ document.addEventListener('click', e => {
     }
     case 'cookok': sheetCook.ok(); break;
     case 'newrecipe': sheetRecipe(); break;
+    case 'suggest': sheetSuggest(false); break;
+    case 'moreideas': sheetSuggest(true); break;
+    case 'import': sheetImport(); break;
     case 'addIng': { const box = $('ings'), k = 'n' + Date.now(); box.insertAdjacentHTML('beforeend', sheetRecipe.row({ n: '', q: '', u: 'g' }, k)); box.querySelector(`[data-in="${k}"]`).focus(); break; }
     case 'delrecipe': if (confirmTap(t, 'Tocca di nuovo per eliminare')) { deleteDoc(dref('recipes', d.id)).catch(fail); closeSheet(); toast('Ricetta eliminata'); } break;
     case 'newrem': sheetReminder(); break;
@@ -940,11 +1046,12 @@ document.addEventListener('submit', e => {
   if (f.id === 'recipeForm') {
     const ings = [...document.querySelectorAll('[data-ing]')].map(r => {
       const k = r.dataset.ing;
-      return { n: cap(r.querySelector(`[data-in="${k}"]`).value), q: num(r.querySelector(`[data-iq="${k}"]`).value), u: r.querySelector(`[data-iu="${k}"]`).value };
-    }).filter(i => i.n && i.q > 0);
-    if (!ings.length) { toast('Aggiungi almeno un ingrediente con quantità'); return; }
+      const q = num(r.querySelector(`[data-iq="${k}"]`).value);
+      return { n: cap(r.querySelector(`[data-in="${k}"]`).value), q: q > 0 ? q : 0, u: r.querySelector(`[data-iu="${k}"]`).value, opt: !(q > 0) };
+    }).filter(i => i.n);
+    if (!ings.some(i => !i.opt)) { toast('Aggiungi almeno un ingrediente con quantità'); return; }
     const id = f.dataset.id || newId('recipes');
-    const data = { name: cap(v('rname')), serv: Math.max(1, num(v('rserv')) || 1), time: num(v('rtime')) || null, url: v('rurl') || null, ings, src: f.dataset.id ? (state.recipes.find(r => r.id === id)?.src || 'mia') : 'mia', ...stamp() };
+    const data = { name: cap(v('rname')), serv: Math.max(1, num(v('rserv')) || 1), time: num(v('rtime')) || null, url: v('rurl') || null, ings, src: f.dataset.id ? (state.recipes.find(r => r.id === id)?.src || 'mia') : (f.dataset.src || 'mia'), ...stamp() };
     setDoc(dref('recipes', id), data).catch(fail); closeSheet(); toast('Ricetta salvata'); return;
   }
   if (f.id === 'remForm') {
@@ -954,6 +1061,7 @@ document.addEventListener('submit', e => {
     (f.dataset.id ? updateDoc(dref('reminders', id), data) : setDoc(dref('reminders', id), { ...data, listedFor: null })).catch(fail);
     closeSheet(); toast(f.dataset.id ? 'Promemoria aggiornato' : 'Promemoria creato'); return;
   }
+  if (f.id === 'impForm') { importRecipe(v('impUrl')); return; }
   if (f.id === 'eanForm') { const c = v('eanIn').replace(/\D/g, ''); if (c.length >= 8) { stopScanner(); lookupBarcode(c); } else toast('Il codice ha da 8 a 13 cifre'); }
 });
 
