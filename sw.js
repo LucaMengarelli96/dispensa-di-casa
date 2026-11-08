@@ -1,6 +1,6 @@
 // Service worker: tiene in cache l'app e le librerie, così si apre anche senza rete.
 // I dati non passano da qui: li gestisce la cache offline di Firestore.
-const VERSION = 'dispensa-v2';
+const VERSION = 'dispensa-v3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './firebase.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 const CDN = /^https:\/\/(www\.gstatic\.com\/firebasejs|cdn\.jsdelivr\.net\/npm|fonts\.googleapis\.com|fonts\.gstatic\.com)\//;
 
@@ -31,7 +31,7 @@ self.addEventListener('fetch', e => {
 
   // File dell'app: prima la rete (per avere gli aggiornamenti), se manca usa la cache
   if (url.origin === self.location.origin) {
-    e.respondWith(fetch(req).then(res => {
+    e.respondWith(fetch(req, { cache: 'no-cache' }).then(res => {
       if (res.ok) caches.open(VERSION).then(c => c.put(req, res.clone()));
       return res;
     }).catch(async () => (await caches.match(req, { ignoreSearch: true })) || caches.match('./index.html')));
