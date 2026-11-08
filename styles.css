@@ -1,3 +1,4 @@
+[hidden]{display:none!important}
 /* Layout: app mobile a colonna singola (max 440px), header fisso, contenuto scrollabile, barra schede in basso + pulsante "+" */
 :root{
   --bg:#eef2ee; --surface:#ffffff; --ink:#16201a; --muted:#5b6a61; --line:#dbe2dc;
